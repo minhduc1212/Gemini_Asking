@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Gemini Asking Enhanced
+// @name         Gemini Asking Enhanced (Hover Mode)
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  Hỏi Gemini với text selection, clipboard image, và quick answer
+// @version      3.1
+// @description  Hỏi Gemini với text selection, clipboard image. Hiển thị dạng chấm thông báo, hover để xem kết quả.
 // @author       snoww
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -12,18 +12,18 @@
 
 (function() {
     'use strict';
-    
+
     // Settings
     const API_KEY = ""; 
     const MODEL_NAME = "gemini-2.5-flash";
-    const HOTKEY = "ctrl+shift+g"; // Phím tắt cho text selection
-    const IMAGE_HOTKEY = "ctrl+shift+i"; // Phím tắt cho clipboard image
-    
-    // Prompt prefix cho câu trả lời ngắn gọn
-    const SHORT_PROMPT_PREFIX = "Trả lời ngắn gọn, chỉ đưa đáp án: ";
-    
+    const HOTKEY = "ctrl+shift+g"; 
+    const IMAGE_HOTKEY = "ctrl+shift+i"; 
+
+
+    const SHORT_PROMPT_PREFIX = "Trả lời ngắn gọn, đi thẳng vào vấn đề/đáp án: ";
+
     GM_addStyle(`
-        /* Nút bấm hình vuông, ẩn, chỉ hiện khi hover */
+        /* Nút bấm hình vuông, ẩn, chỉ hiện khi hover (Giữ nguyên tính năng cũ) */
         #gemini-mini-btn {
             position: fixed;
             bottom: 5px;
@@ -39,14 +39,13 @@
             cursor: pointer;
             z-index: 99998;
             transition: all 0.2s;
-            font-family: sans-serif;
         }
         #gemini-mini-btn:hover {
             background: rgba(0, 0, 0, 0.7);
             border-color: rgba(255, 255, 255, 0.3);
         }
-        
-        /* Hộp thoại nhỏ gọn */
+
+        /* Hộp thoại chat đầy đủ (Giữ nguyên) */
         #gemini-mini-popup {
             position: fixed;
             bottom: 35px;
@@ -117,87 +116,117 @@
         }
         #mini-result::-webkit-scrollbar { width: 5px; }
         #mini-result::-webkit-scrollbar-thumb { background: #ccc; }
-        
-        /* Quick answer box - nhỏ gọn, không nổi bật, chỉ hiện khi hover */
+
+        /* --- QUICK ANSWER BOX - HOVER STYLE --- */
         #gemini-quick-answer {
             position: fixed;
-            bottom: 10px;
-            right: 10px;
-            max-width: 300px;
-            min-width: 150px;
-            background-color: rgba(40, 40, 40, 0.85);
-            color: #e0e0e0;
-            padding: 8px 12px;
-            padding-right: 25px;
-            border-radius: 4px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            bottom: 15px;
+            right: 15px;
             z-index: 100000;
-            display: none;
+            display: none; /* Ẩn mặc định */
+
+            /* Trạng thái mặc định (chưa hover): Là một chấm tròn nhỏ */
+            width: 12px;
+            height: 12px;
+            background-color: #007bff; /* Màu xanh khi có kết quả */
+            border-radius: 50%;
+            padding: 0;
+            overflow: hidden; /* Ẩn nội dung text */
+            box-shadow: 0 0 5px rgba(0,0,0,0.3);
+            opacity: 0.6;
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
             font-family: Arial, sans-serif;
             font-size: 11px;
-            line-height: 1.3;
-            animation: fadeIn 0.2s ease-out;
-            opacity: 0.3;
-            transition: opacity 0.2s;
+            line-height: 1.4;
+            color: #e0e0e0;
         }
+
+        /* Màu sắc khi đang Loading (màu cam) */
+        #gemini-quick-answer.is-loading {
+            background-color: #ff9800 !important;
+            animation: pulse-dot 1s infinite;
+        }
+
+        @keyframes pulse-dot {
+            0% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.7); }
+            70% { box-shadow: 0 0 0 6px rgba(255, 152, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0); }
+        }
+
+        /* Khi hover vào: Mở rộng ra để hiện nội dung */
         #gemini-quick-answer:hover {
+            width: auto;
+            height: auto;
+            max-width: 350px;
+            min-width: 150px;
+            border-radius: 6px;
+            padding: 10px 15px;
+            padding-right: 25px;
+            background-color: rgba(30, 30, 30, 0.95); /* Nền tối khi mở rộng */
             opacity: 1;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.4);
         }
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-            }
-            to {
-                opacity: 0.3;
-            }
+
+        /* Nội dung bên trong (ẩn khi chưa hover) */
+        #gemini-quick-answer .content {
+            opacity: 0;
+            transition: opacity 0.2s;
+            white-space: pre-wrap;
+            display: block;
+            width: 100%;
         }
+
+        #gemini-quick-answer:hover .content {
+            opacity: 1;
+            transition-delay: 0.1s; /* Hiện chữ chậm hơn 1 chút sau khi khung mở ra */
+        }
+
         #gemini-quick-answer .close-btn {
             position: absolute;
-            top: 3px;
+            top: 2px;
             right: 5px;
             background: none;
             border: none;
-            color: #999;
+            color: #888;
             cursor: pointer;
-            font-size: 14px;
-            padding: 0;
-            line-height: 1;
-            opacity: 0.6;
+            font-size: 16px;
+            opacity: 0; /* Ẩn nút close khi chưa hover */
+            transition: opacity 0.2s;
+        }
+        #gemini-quick-answer:hover .close-btn {
+            opacity: 1;
         }
         #gemini-quick-answer .close-btn:hover {
-            opacity: 1;
             color: #fff;
         }
-        #gemini-quick-answer .content {
-            word-wrap: break-word;
-        }
-        #gemini-quick-answer .loading {
+
+        /* Loading Spinner bên trong (chỉ hiện khi hover vào lúc đang load) */
+        .qa-spinner {
             display: inline-block;
             width: 10px;
             height: 10px;
-            border: 2px solid rgba(255,255,255,0.2);
-            border-top-color: rgba(255,255,255,0.6);
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
             border-radius: 50%;
-            animation: spin 0.6s linear infinite;
-            margin-right: 5px;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
         }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
     `);
-    
+
     // INTERFACE
     const btn = document.createElement('button');
     btn.id = 'gemini-mini-btn';
     btn.textContent = '';
-    btn.title = 'Ask Gemini'; // Tooltip khi hover
+    btn.title = 'Ask Gemini';
     document.body.appendChild(btn);
-    
+
     const popup = document.createElement('div');
     popup.id = 'gemini-mini-popup';
     popup.innerHTML = `
         <div class="mini-header" id="mini-header">
-            <span>Gemini (${HOTKEY} / ${IMAGE_HOTKEY})</span>
+            <span>Gemini Chat</span>
             <button class="mini-close">&times;</button>
         </div>
         <div class="mini-body">
@@ -207,7 +236,7 @@
         </div>
     `;
     document.body.appendChild(popup);
-    
+
     // Quick answer box
     const quickAnswer = document.createElement('div');
     quickAnswer.id = 'gemini-quick-answer';
@@ -216,7 +245,7 @@
         <div class="content"></div>
     `;
     document.body.appendChild(quickAnswer);
-    
+
     // Elements
     const closeBtn = popup.querySelector('.mini-close');
     const input = popup.querySelector('#mini-input');
@@ -224,32 +253,46 @@
     const result = popup.querySelector('#mini-result');
     const quickContent = quickAnswer.querySelector('.content');
     const quickCloseBtn = quickAnswer.querySelector('.close-btn');
-    
+
+    let hideTimeout;
+
     // Hàm hiển thị quick answer
     function showQuickAnswer(text, isLoading = false) {
+        // Clear timeout cũ nếu có
+        if (hideTimeout) clearTimeout(hideTimeout);
+
+        quickAnswer.style.display = 'block';
+
         if (isLoading) {
-            quickContent.innerHTML = '<span class="loading"></span>Đang xử lý...';
+            quickAnswer.classList.add('is-loading');
+            quickContent.innerHTML = '<span class="qa-spinner"></span> Đang phân tích...';
         } else {
+            quickAnswer.classList.remove('is-loading');
             quickContent.innerHTML = text;
         }
-        quickAnswer.style.display = 'block';
-        
-        // Tự động ẩn sau 8 giây nếu không phải loading
+
+        // Tự động ẩn sau 15 giây nếu không ai hover vào (tăng thời gian vì giờ nó gọn hơn)
+        // Nếu muốn nó luôn hiện cho đến khi tắt, hãy comment dòng dưới
         if (!isLoading) {
-            setTimeout(() => {
+            hideTimeout = setTimeout(() => {
                 quickAnswer.style.display = 'none';
-            }, 8000);
+            }, 15000);
         }
     }
-    
-    // Hàm gọi API với text (giữ nguyên logic code cũ)
+
+    // Khi hover vào quick answer, hủy timer ẩn để người dùng đọc
+    quickAnswer.onmouseenter = () => {
+        if (hideTimeout) clearTimeout(hideTimeout);
+    };
+
+    // Hàm gọi API với text
     function askGemini(text, showInQuickBox = false) {
         if (!API_KEY || API_KEY.trim() === "") {
             const errMsg = "❌ Lỗi: Chưa có API Key.";
             showInQuickBox ? showQuickAnswer(errMsg) : (result.innerHTML = errMsg);
             return;
         }
-        
+
         if (showInQuickBox) {
             showQuickAnswer('', true);
         } else {
@@ -257,15 +300,14 @@
             submit.textContent = "...";
             result.innerHTML = "Đang tải...";
         }
-        
-        // Thêm prefix cho quick box để câu trả lời ngắn gọn hơn
+
         const finalText = showInQuickBox ? (SHORT_PROMPT_PREFIX + text) : text;
-        
+
         GM_xmlhttpRequest({
             method: "POST",
             url: `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`,
             headers: { "Content-Type": "application/json" },
-            data: JSON.stringify({ 
+            data: JSON.stringify({
                 "contents": [{ "parts": [{ "text": finalText }] }]
             }),
             onload: (res) => {
@@ -273,64 +315,53 @@
                     submit.disabled = false;
                     submit.textContent = "Gửi";
                 }
-                
+
                 try {
-                    console.log("API Response:", res.responseText);
                     const data = JSON.parse(res.responseText);
-                    
-                    // Kiểm tra lỗi từ API
                     if (data.error) {
                         const errMsg = `❌ API Error: ${data.error.message}`;
-                        console.error("Gemini API Error:", data.error);
                         showInQuickBox ? showQuickAnswer(errMsg) : (result.innerHTML = errMsg);
                         return;
                     }
-                    
+
                     let ans = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                    
                     if (!ans) {
-                        console.error("No text in response:", data);
-                        const errMsg = "❌ Không nhận được câu trả lời từ API";
+                        const errMsg = "❌ Không nhận được câu trả lời";
                         showInQuickBox ? showQuickAnswer(errMsg) : (result.innerHTML = errMsg);
                         return;
                     }
-                    
+
                     // Simple formatting
                     ans = ans.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
-                    
+
                     if (showInQuickBox) {
                         showQuickAnswer(ans);
                     } else {
                         result.innerHTML = ans;
                     }
                 } catch(e) {
-                    console.error("Parse error:", e, "Response:", res.responseText);
                     const errMsg = `❌ Lỗi xử lý: ${e.message}`;
                     showInQuickBox ? showQuickAnswer(errMsg) : (result.textContent = errMsg);
                 }
             },
             onerror: () => {
-                if (!showInQuickBox) {
-                    submit.disabled = false;
-                    submit.textContent = "Gửi";
-                }
                 const errMsg = "❌ Lỗi kết nối mạng.";
                 showInQuickBox ? showQuickAnswer(errMsg) : (result.textContent = errMsg);
             }
         });
     }
-    
-    // Hàm gọi API với image (giữ logic đơn giản như code cũ)
+
+    // Hàm gọi API với image
     function askGeminiWithImage(imageBase64, mimeType = "image/png") {
         if (!API_KEY || API_KEY.trim() === "") {
             showQuickAnswer("❌ Lỗi: Chưa có API Key.");
             return;
         }
-        
+
         showQuickAnswer('', true);
-        
-        const promptText = SHORT_PROMPT_PREFIX + "Mô tả hoặc trả lời câu hỏi trong ảnh này";
-        
+
+        const promptText = SHORT_PROMPT_PREFIX + "Phân tích ảnh và trả lời câu hỏi hoặc mô tả nội dung chính:";
+
         GM_xmlhttpRequest({
             method: "POST",
             url: `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`,
@@ -350,30 +381,19 @@
             }),
             onload: (res) => {
                 try {
-                    console.log("API Response (Image):", res.responseText);
                     const data = JSON.parse(res.responseText);
-                    
-                    // Kiểm tra lỗi từ API
                     if (data.error) {
-                        const errMsg = `❌ API Error: ${data.error.message}`;
-                        console.error("Gemini API Error:", data.error);
-                        showQuickAnswer(errMsg);
+                        showQuickAnswer(`❌ API Error: ${data.error.message}`);
                         return;
                     }
-                    
                     let ans = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                    
                     if (!ans) {
-                        console.error("No text in response:", data);
-                        showQuickAnswer("❌ Không nhận được câu trả lời từ API");
+                        showQuickAnswer("❌ Không nhận được câu trả lời");
                         return;
                     }
-                    
-                    // Simple formatting
                     ans = ans.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
                     showQuickAnswer(ans);
                 } catch(e) {
-                    console.error("Parse error:", e, "Response:", res.responseText);
                     showQuickAnswer(`❌ Lỗi xử lý: ${e.message}`);
                 }
             },
@@ -382,7 +402,7 @@
             }
         });
     }
-    
+
     // Parse hotkey
     function parseHotkey(hotkey) {
         const parts = hotkey.toLowerCase().split('+');
@@ -393,70 +413,66 @@
             key: parts[parts.length - 1]
         };
     }
-    
+
     const textHotkey = parseHotkey(HOTKEY);
     const imageHotkey = parseHotkey(IMAGE_HOTKEY);
-    
-    // Event listeners cho chức năng cũ
+
+    // Event listeners
     btn.onclick = () => {
         popup.style.display = (popup.style.display === 'flex') ? 'none' : 'flex';
         if(popup.style.display === 'flex') input.focus();
     };
-    
+
     closeBtn.onclick = () => popup.style.display = 'none';
     submit.onclick = () => { if(input.value.trim()) askGemini(input.value); };
-    input.onkeydown = (e) => { 
-        if(e.key === 'Enter' && !e.shiftKey) { 
-            e.preventDefault(); 
-            submit.click(); 
+    input.onkeydown = (e) => {
+        if(e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            submit.click();
         }
     };
-    
-    quickCloseBtn.onclick = () => quickAnswer.style.display = 'none';
-    
-    // CHỨC NĂNG MỚI 1: Bôi đen text và gửi bằng phím tắt
+
+    // Đóng quick answer
+    quickCloseBtn.onclick = (e) => {
+        e.stopPropagation(); // Ngăn chặn sự kiện click lan ra ngoài
+        quickAnswer.style.display = 'none';
+    };
+
+    // Hotkey listener
     document.addEventListener('keydown', (e) => {
-        // Kiểm tra hotkey cho text selection
-        if (e.ctrlKey === textHotkey.ctrl && 
-            e.shiftKey === textHotkey.shift && 
-            e.altKey === textHotkey.alt && 
+        if (e.ctrlKey === textHotkey.ctrl &&
+            e.shiftKey === textHotkey.shift &&
+            e.altKey === textHotkey.alt &&
             e.key.toLowerCase() === textHotkey.key) {
-            
+
             e.preventDefault();
             const selectedText = window.getSelection().toString().trim();
-            
             if (selectedText) {
                 askGemini(selectedText, true);
             } else {
-                showQuickAnswer("⚠️ Chưa chọn văn bản nào!");
+                showQuickAnswer("⚠️ Chưa chọn văn bản!");
             }
         }
-        
-        // Kiểm tra hotkey cho clipboard image
-        if (e.ctrlKey === imageHotkey.ctrl && 
-            e.shiftKey === imageHotkey.shift && 
-            e.altKey === imageHotkey.alt && 
+
+        if (e.ctrlKey === imageHotkey.ctrl &&
+            e.shiftKey === imageHotkey.shift &&
+            e.altKey === imageHotkey.alt &&
             e.key.toLowerCase() === imageHotkey.key) {
-            
+
             e.preventDefault();
             handleClipboardImage();
         }
     });
-    
-    // CHỨC NĂNG MỚI 2: Đọc ảnh từ clipboard
+
+    // Handle Image from clipboard
     async function handleClipboardImage() {
         try {
             const clipboardItems = await navigator.clipboard.read();
-            
             for (const item of clipboardItems) {
-                // Tìm ảnh trong clipboard
                 const imageTypes = item.types.filter(type => type.startsWith('image/'));
-                
                 if (imageTypes.length > 0) {
                     const imageType = imageTypes[0];
                     const blob = await item.getType(imageType);
-                    
-                    // Convert blob to base64
                     const reader = new FileReader();
                     reader.onloadend = () => {
                         const base64data = reader.result.split(',')[1];
@@ -466,26 +482,24 @@
                     return;
                 }
             }
-            
             showQuickAnswer("⚠️ Không tìm thấy ảnh trong clipboard!");
-            
         } catch (err) {
-            console.error("Clipboard error:", err);
-            showQuickAnswer("❌ Không thể đọc clipboard. Hãy chắc rằng bạn đã copy ảnh!");
+            console.error(err);
+            showQuickAnswer("❌ Lỗi clipboard. Hãy chắc rằng bạn đã copy ảnh!");
         }
     }
-    
-    // Drag functionality
+
+    // Drag functionality for main popup
     const header = popup.querySelector('#mini-header');
     let isDragging = false, startX, startY, initialLeft, initialTop;
-    
+
     header.onmousedown = (e) => {
         isDragging = true;
         startX = e.clientX;
         startY = e.clientY;
         initialLeft = popup.offsetLeft;
         initialTop = popup.offsetTop;
-        
+
         document.onmousemove = (e) => {
             if (!isDragging) return;
             popup.style.left = (initialLeft + e.clientX - startX) + "px";
@@ -493,16 +507,13 @@
             popup.style.bottom = 'auto';
             popup.style.right = 'auto';
         };
-        
-        document.onmouseup = () => { 
-            isDragging = false; 
-            document.onmousemove = null; 
+
+        document.onmouseup = () => {
+            isDragging = false;
+            document.onmousemove = null;
         };
     };
-    
-    // Thông báo khi script load
-    console.log(`Gemini Enhanced loaded! 
-    - Text selection: ${HOTKEY}
-    - Clipboard image: ${IMAGE_HOTKEY}`);
-    
+
+    console.log("Gemini Enhanced Hover-Mode loaded");
+
 })();
