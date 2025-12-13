@@ -271,8 +271,7 @@
             quickContent.innerHTML = text;
         }
 
-        // Tự động ẩn sau 15 giây nếu không ai hover vào (tăng thời gian vì giờ nó gọn hơn)
-        // Nếu muốn nó luôn hiện cho đến khi tắt, hãy comment dòng dưới
+        //autohiding
         if (!isLoading) {
             hideTimeout = setTimeout(() => {
                 quickAnswer.style.display = 'none';
