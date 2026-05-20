@@ -18,22 +18,24 @@
     const blockedEvents = ['blur', 'visibilitychange', 'focusout', 'mouseleave', 'webkitvisibilitychange', 'mozvisibilitychange', 'msvisibilitychange'];
     
     // Proxy for window.addEventListener
-    window.addEventListener = new Proxy(window.addEventListener, {
+    const originalWindowAddEventListener = window.addEventListener;
+    window.addEventListener = new Proxy(originalWindowAddEventListener, {
         apply(target, thisArg, args) {
             if (blockedEvents.includes(args[0])) {
                 return; // Chặn đăng ký event
             }
-            return target.apply(thisArg, args);
+            return Reflect.apply(target, thisArg, args);
         }
     });
 
     // Proxy for document.addEventListener
-    document.addEventListener = new Proxy(document.addEventListener, {
+    const originalDocumentAddEventListener = document.addEventListener;
+    document.addEventListener = new Proxy(originalDocumentAddEventListener, {
         apply(target, thisArg, args) {
             if (blockedEvents.includes(args[0])) {
                 return;
             }
-            return target.apply(thisArg, args);
+            return Reflect.apply(target, thisArg, args);
         }
     });
 
@@ -491,14 +493,15 @@
         quickAnswer.style.display = 'none';
     };
 
-    // Hotkey listener
-    document.addEventListener('keydown', (e) => {
+    // Hotkey listener (Use window and capture phase to bypass page's own preventDefault)
+    window.addEventListener('keydown', (e) => {
         if (e.ctrlKey === textHotkey.ctrl &&
             e.shiftKey === textHotkey.shift &&
             e.altKey === textHotkey.alt &&
             e.key.toLowerCase() === textHotkey.key) {
 
             e.preventDefault();
+            e.stopPropagation();
             const selectedText = window.getSelection().toString().trim();
             if (selectedText) {
                 askGemini(selectedText, true);
@@ -513,9 +516,10 @@
             e.key.toLowerCase() === imageHotkey.key) {
 
             e.preventDefault();
+            e.stopPropagation();
             handleClipboardImage();
         }
-    });
+    }, true);
 
     // Handle Image from clipboard
     async function handleClipboardImage() {
