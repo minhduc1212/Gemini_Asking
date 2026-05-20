@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Gemini Asking Enhanced (Hover Mode)
 // @namespace    http://tampermonkey.net/
-// @version      3.1
-// @description  Hỏi Gemini với text selection, clipboard image. Hiển thị dạng chấm thông báo, hover để xem kết quả.
+// @version      3.2
+// @description  Hỏi Gemini với text selection, clipboard image. Hiển thị dạng chấm thông báo, hover để xem kết quả. Bypass anti-cheat (blur, visibilitychange) và tự động đổi API key/model.
 // @author       snoww
 // @match        *://*/*
+// @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
@@ -13,14 +14,68 @@
 (function() {
     'use strict';
 
+    // 1. BYPASS ANTI-CHEAT (Chạy ngay lập tức)
+    const blockedEvents = ['blur', 'visibilitychange', 'focusout', 'mouseleave', 'webkitvisibilitychange', 'mozvisibilitychange', 'msvisibilitychange'];
+    
+    // Proxy for window.addEventListener
+    window.addEventListener = new Proxy(window.addEventListener, {
+        apply(target, thisArg, args) {
+            if (blockedEvents.includes(args[0])) {
+                return; // Chặn đăng ký event
+            }
+            return target.apply(thisArg, args);
+        }
+    });
+
+    // Proxy for document.addEventListener
+    document.addEventListener = new Proxy(document.addEventListener, {
+        apply(target, thisArg, args) {
+            if (blockedEvents.includes(args[0])) {
+                return;
+            }
+            return target.apply(thisArg, args);
+        }
+    });
+
+    // Mock properties
+    try {
+        Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+        Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+        Object.defineProperty(document, 'hasFocus', { value: () => true, configurable: true });
+        Object.defineProperty(window, 'onblur', { set: () => {}, get: () => null, configurable: true });
+        Object.defineProperty(document, 'onvisibilitychange', { set: () => {}, get: () => null, configurable: true });
+    } catch (e) {
+        console.warn("Gemini Bypass: Could not redefine some properties", e);
+    }
+
     // Settings
-    const API_KEY = ""; 
-    const MODEL_NAME = "gemini-2.5-flash";
+    let API_KEYS = [""]; // Thêm các API key của bạn vào đây
+    let MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+    
+    let currentKeyIndex = 0;
+    let currentModelIndex = 0;
+
     const HOTKEY = "ctrl+shift+g"; 
     const IMAGE_HOTKEY = "ctrl+shift+i"; 
 
-
     const SHORT_PROMPT_PREFIX = "Trả lời ngắn gọn, đi thẳng vào vấn đề/đáp án: ";
+
+    // Helper to get current config
+    function getCurrentConfig() {
+        return {
+            key: API_KEYS[currentKeyIndex % API_KEYS.length],
+            model: MODELS[currentModelIndex % MODELS.length]
+        };
+    }
+
+    // Helper to rotate config
+    function rotateConfig() {
+        currentKeyIndex++;
+        if (currentKeyIndex % API_KEYS.length === 0) {
+            currentModelIndex = (currentModelIndex + 1) % MODELS.length;
+        }
+        console.log(`Gemini: Rotated to Key Index ${currentKeyIndex % API_KEYS.length}, Model: ${MODELS[currentModelIndex % MODELS.length]}`);
+    }
 
     GM_addStyle(`
         /* Nút bấm hình vuông, ẩn, chỉ hiện khi hover (Giữ nguyên tính năng cũ) */
@@ -284,14 +339,65 @@
         if (hideTimeout) clearTimeout(hideTimeout);
     };
 
-    // Hàm gọi API với text
-    function askGemini(text, showInQuickBox = false) {
-        if (!API_KEY || API_KEY.trim() === "") {
-            const errMsg = "❌ Lỗi: Chưa có API Key.";
-            showInQuickBox ? showQuickAnswer(errMsg) : (result.innerHTML = errMsg);
+    // Hàm gọi API tổng quát với retry logic
+    function callGemini(payload, onSuccess, onError, retryCount = 0) {
+        const { key, model } = getCurrentConfig();
+        const maxRetries = API_KEYS.length * MODELS.length;
+
+        if (!key || key.trim() === "") {
+            onError("❌ Lỗi: Chưa có API Key. Hãy thêm vào script settings.");
             return;
         }
 
+        GM_xmlhttpRequest({
+            method: "POST",
+            url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+            headers: { "Content-Type": "application/json" },
+            data: JSON.stringify(payload),
+            onload: (res) => {
+                try {
+                    const data = JSON.parse(res.responseText);
+                    
+                    // Kiểm tra lỗi từ API (hết quota, key chết, etc.)
+                    if (data.error) {
+                        console.error(`Gemini Error (Model: ${model}):`, data.error);
+                        
+                        if (retryCount < maxRetries) {
+                            rotateConfig();
+                            callGemini(payload, onSuccess, onError, retryCount + 1);
+                        } else {
+                            onError(`❌ Tất cả API Key/Model đều thất bại. Lỗi cuối: ${data.error.message}`);
+                        }
+                        return;
+                    }
+
+                    let ans = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (!ans) {
+                        onError("❌ Không nhận được câu trả lời từ AI.");
+                        return;
+                    }
+
+                    // Format đơn giản
+                    ans = ans.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+                    onSuccess(ans);
+                } catch(e) {
+                    onError(`❌ Lỗi xử lý JSON: ${e.message}`);
+                }
+            },
+            onerror: (err) => {
+                console.error("Network Error:", err);
+                if (retryCount < maxRetries) {
+                    rotateConfig();
+                    callGemini(payload, onSuccess, onError, retryCount + 1);
+                } else {
+                    onError("❌ Lỗi kết nối mạng sau nhiều lần thử.");
+                }
+            }
+        });
+    }
+
+    // Hàm gọi API với text
+    function askGemini(text, showInQuickBox = false) {
         if (showInQuickBox) {
             showQuickAnswer('', true);
         } else {
@@ -301,105 +407,53 @@
         }
 
         const finalText = showInQuickBox ? (SHORT_PROMPT_PREFIX + text) : text;
+        const payload = { "contents": [{ "parts": [{ "text": finalText }] }] };
 
-        GM_xmlhttpRequest({
-            method: "POST",
-            url: `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`,
-            headers: { "Content-Type": "application/json" },
-            data: JSON.stringify({
-                "contents": [{ "parts": [{ "text": finalText }] }]
-            }),
-            onload: (res) => {
+        callGemini(payload, 
+            (ans) => {
                 if (!showInQuickBox) {
                     submit.disabled = false;
                     submit.textContent = "Gửi";
-                }
-
-                try {
-                    const data = JSON.parse(res.responseText);
-                    if (data.error) {
-                        const errMsg = `❌ API Error: ${data.error.message}`;
-                        showInQuickBox ? showQuickAnswer(errMsg) : (result.innerHTML = errMsg);
-                        return;
-                    }
-
-                    let ans = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                    if (!ans) {
-                        const errMsg = "❌ Không nhận được câu trả lời";
-                        showInQuickBox ? showQuickAnswer(errMsg) : (result.innerHTML = errMsg);
-                        return;
-                    }
-
-                    // Simple formatting
-                    ans = ans.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
-
-                    if (showInQuickBox) {
-                        showQuickAnswer(ans);
-                    } else {
-                        result.innerHTML = ans;
-                    }
-                } catch(e) {
-                    const errMsg = `❌ Lỗi xử lý: ${e.message}`;
-                    showInQuickBox ? showQuickAnswer(errMsg) : (result.textContent = errMsg);
+                    result.innerHTML = ans;
+                } else {
+                    showQuickAnswer(ans);
                 }
             },
-            onerror: () => {
-                const errMsg = "❌ Lỗi kết nối mạng.";
-                showInQuickBox ? showQuickAnswer(errMsg) : (result.textContent = errMsg);
+            (errMsg) => {
+                if (!showInQuickBox) {
+                    submit.disabled = false;
+                    submit.textContent = "Gửi";
+                    result.innerHTML = errMsg;
+                } else {
+                    showQuickAnswer(errMsg);
+                }
             }
-        });
+        );
     }
 
     // Hàm gọi API với image
     function askGeminiWithImage(imageBase64, mimeType = "image/png") {
-        if (!API_KEY || API_KEY.trim() === "") {
-            showQuickAnswer("❌ Lỗi: Chưa có API Key.");
-            return;
-        }
-
         showQuickAnswer('', true);
 
         const promptText = SHORT_PROMPT_PREFIX + "Phân tích ảnh và trả lời câu hỏi hoặc mô tả nội dung chính:";
-
-        GM_xmlhttpRequest({
-            method: "POST",
-            url: `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`,
-            headers: { "Content-Type": "application/json" },
-            data: JSON.stringify({
-                "contents": [{
-                    "parts": [
-                        { "text": promptText },
-                        {
-                            "inline_data": {
-                                "mime_type": mimeType,
-                                "data": imageBase64
-                            }
+        const payload = {
+            "contents": [{
+                "parts": [
+                    { "text": promptText },
+                    {
+                        "inline_data": {
+                            "mime_type": mimeType,
+                            "data": imageBase64
                         }
-                    ]
-                }]
-            }),
-            onload: (res) => {
-                try {
-                    const data = JSON.parse(res.responseText);
-                    if (data.error) {
-                        showQuickAnswer(`❌ API Error: ${data.error.message}`);
-                        return;
                     }
-                    let ans = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                    if (!ans) {
-                        showQuickAnswer("❌ Không nhận được câu trả lời");
-                        return;
-                    }
-                    ans = ans.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
-                    showQuickAnswer(ans);
-                } catch(e) {
-                    showQuickAnswer(`❌ Lỗi xử lý: ${e.message}`);
-                }
-            },
-            onerror: () => {
-                showQuickAnswer("❌ Lỗi kết nối mạng.");
-            }
-        });
+                ]
+            }]
+        };
+
+        callGemini(payload,
+            (ans) => showQuickAnswer(ans),
+            (errMsg) => showQuickAnswer(errMsg)
+        );
     }
 
     // Parse hotkey
